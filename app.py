@@ -1,3 +1,4 @@
+import unicodedata
 
 from flask import Flask, request, render_template_string, send_file
 import pandas as pd
@@ -109,10 +110,18 @@ def upload_files():
         filename = f"conciliacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         filepath = os.path.join(HISTORICO_DIR, filename)
 
-        with pd.ExcelWriter(filepath, engine='xlsxwriter') as writer:
+        
+with pd.ExcelWriter(filepath, engine='xlsxwriter') as writer:
+    format_nf = writer.book.add_format({'bg_color': '#F2F2F2'})
+    format_banco = writer.book.add_format({'bg_color': '#DAE8FC'})
+    format_status = writer.book.add_format({'bg_color': '#D9EAD3'})
+
             df_saida.to_excel(writer, index=False, sheet_name="Conciliação")
             ws = writer.sheets["Conciliação"]
             ws.autofilter(0, 0, len(df_saida), len(df_saida.columns) - 1)
+    ws.set_column("A:E", 18, format_nf)
+    ws.set_column("F:H", 18, format_banco)
+    ws.set_column("I:J", 25, format_status)
             ws.set_column("A:E", 18)
             ws.set_column("F:H", 18)
             ws.set_column("I:J", 25)
