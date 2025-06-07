@@ -1,3 +1,4 @@
+
 import unicodedata
 
 from flask import Flask, request, render_template_string, send_file
@@ -15,7 +16,6 @@ os.makedirs(HISTORICO_DIR, exist_ok=True)
 def nomes_semelhantes(nome1, nome2):
     return SequenceMatcher(None, nome1.upper(), nome2.upper()).ratio() > 0.8
 
-
 def normalizar(texto):
     texto = texto.upper()
     texto = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('ASCII')
@@ -26,10 +26,6 @@ def extrair_raiz(nome):
     texto = normalizar(nome)
     palavras = texto.split()
     ignorar = {"LTDA", "EIRELI", "ME", "MAT", "MATRIZ", "FILIAL", "COMERCIAL", "NACIONAL", "CENTRO", "SHOPPING", "SUL", "NORTE", "UNIDADE", "LOJA", "GRUPO"}
-    return " ".join([p for p in palavras if p not in ignorar])
-
-    palavras = nome.upper().split()
-    ignorar = {"LTDA", "EIRELI", "ME", "MAT", "MATRIZ", "FILIAL", "COMERCIAL", "NACIONAL", "CENTRO", "SHOPPING", "SUL", "NORTE"}
     return " ".join([p for p in palavras if p not in ignorar])
 
 @app.route("/", methods=["GET"])
@@ -126,6 +122,9 @@ def upload_files():
             return send_file(filepath, download_name=filename, as_attachment=True)
         except Exception as e:
             return f"Erro ao gerar Excel: {e}"
+
+    except Exception as e:
+        return f"Erro ao processar os arquivos: {e}"
 
 @app.route("/historico/<nome>")
 def baixar_arquivo(nome):
