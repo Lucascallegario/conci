@@ -1,0 +1,85 @@
+
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Conciliação Bancária - IUS</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f8f9fa;
+            margin: 0;
+            padding: 0;
+            text-align: center;
+        }
+        .container {
+            max-width: 700px;
+            margin: 50px auto;
+            background: #ffffff;
+            padding: 40px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.05);
+            border-radius: 12px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+        label {
+            font-weight: bold;
+            display: block;
+            margin-top: 20px;
+            margin-bottom: 8px;
+        }
+        input[type="file"] {
+            padding: 6px;
+        }
+        input[type="submit"] {
+            margin-top: 30px;
+            padding: 10px 25px;
+            font-size: 16px;
+            background-color: #0066cc;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        input[type="submit"]:hover {
+            background-color: #004999;
+        }
+        .logo {
+            max-width: 180px;
+            margin-bottom: 20px;
+        }
+        .historico {
+            margin-top: 40px;
+        }
+        a {
+            color: #0066cc;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <img src="/static/ius_logo.png" alt="Logo IUS" class="logo">
+        <h1>Upload de Arquivos para Conciliação</h1>
+        <form action="/upload" method="post" enctype="multipart/form-data">
+            <label>Notas Fiscais (Contas a Receber):</label>
+            <input type="file" name="notas" required>
+            <label>Extrato Bancário:</label>
+            <input type="file" name="extrato" required>
+            <br>
+            <input type="submit" value="Iniciar Conciliação">
+        </form>
+        <div class="historico">
+            <h2>Histórico de Conciliações</h2>
+            {% for arquivo in arquivos %}
+                <p><a href="/historico/{{ arquivo }}">{{ arquivo }}</a></p>
+            {% endfor %}
+        </div>
+    </div>
+</body>
+</html>
