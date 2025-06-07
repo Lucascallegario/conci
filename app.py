@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 
 app = Flask(__name__)
-os.makedirs(HISTORICO_DIR, exist_ok=True)
 app.static_folder = 'static'
 HISTORICO_DIR = "historico"
+os.makedirs(HISTORICO_DIR, exist_ok=True)
 
 def nomes_semelhantes(nome1, nome2):
     return SequenceMatcher(None, nome1.upper(), nome2.upper()).ratio() > 0.8
