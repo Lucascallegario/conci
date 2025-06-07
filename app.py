@@ -7,6 +7,7 @@ import os
 from io import BytesIO
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
+from itertools import combinations
 
 app = Flask(__name__)
 app.static_folder = 'static'
@@ -15,6 +16,9 @@ os.makedirs(HISTORICO_DIR, exist_ok=True)
 
 def nomes_semelhantes(nome1, nome2):
     return SequenceMatcher(None, nome1.upper(), nome2.upper()).ratio() > 0.8
+
+def nomes_parecidos(a, b, threshold=0.8):
+    return SequenceMatcher(None, a.upper(), b.upper()).ratio() >= threshold
 
 def normalizar(texto):
     texto = texto.upper()
@@ -53,6 +57,7 @@ def upload_files():
         conciliado = []
         df_pendentes = df_notas.copy()
 
+        # CAMADA 1: Agrupamento por raiz e data ±5 dias
         for _, lanc in df_extrato.iterrows():
             data_lanc = lanc["Data do Crédito"]
             valor_lanc = lanc["Valor"]
@@ -63,7 +68,6 @@ def upload_files():
                 (df_pendentes["Raiz"] == raiz_lanc)
             ]
 
-            from itertools import combinations
             match = False
             for i in range(1, len(candidatas)+1):
                 for combo in combinations(candidatas.index, i):
@@ -88,6 +92,83 @@ def upload_files():
                         break
                 if match: break
 
+        # CAMADA 2: Raiz + Data ±10 dias
+        nao_conciliados_parciais = df_pendentes.copy()
+
+        for _, lanc in df_extrato.iterrows():
+            if nao_conciliados_parciais.empty:
+                break
+            data_lanc = lanc["Data do Crédito"]
+            valor_lanc = lanc["Valor"]
+            raiz_lanc = lanc["Raiz"]
+
+            candidatas = nao_conciliados_parciais[
+                (abs(nao_conciliados_parciais["Data de Vencimento"] - data_lanc) <= timedelta(days=10)) &
+                (nao_conciliados_parciais["Raiz"] == raiz_lanc)
+            ]
+
+            match = False
+            for i in range(1, len(candidatas)+1):
+                for combo in combinations(candidatas.index, i):
+                    subset = candidatas.loc[list(combo)]
+                    soma = subset["Valor"].sum()
+                    if abs(soma - valor_lanc) <= 10:
+                        for _, nf in subset.iterrows():
+                            conciliado.append({
+                                "Número NF": nf["Número NF"],
+                                "CNPJ": nf["CNPJ"],
+                                "Razão Social": nf["Razão Social"],
+                                "Valor NF": nf["Valor"],
+                                "Data Vencimento": nf["Data de Vencimento"].date(),
+                                "Valor Crédito": valor_lanc,
+                                "Data Crédito": data_lanc.date(),
+                                "Descrição Crédito": lanc["Descrição"],
+                                "Status": "Conciliado",
+                                "Critério": "Raiz + Data ±10 dias"
+                            })
+                        nao_conciliados_parciais.drop(index=subset.index, inplace=True)
+                        match = True
+                        break
+                if match: break
+
+        # CAMADA 3: Razão Social semelhante (fuzzy match)
+        for _, lanc in df_extrato.iterrows():
+            if nao_conciliados_parciais.empty:
+                break
+            data_lanc = lanc["Data do Crédito"]
+            valor_lanc = lanc["Valor"]
+            desc_lanc = lanc["Descrição"]
+
+            candidatas = nao_conciliados_parciais[
+                nao_conciliados_parciais["Razão Social"].apply(lambda x: nomes_parecidos(x, desc_lanc))
+            ]
+
+            match = False
+            for i in range(1, len(candidatas)+1):
+                for combo in combinations(candidatas.index, i):
+                    subset = candidatas.loc[list(combo)]
+                    soma = subset["Valor"].sum()
+                    if abs(soma - valor_lanc) <= 10:
+                        for _, nf in subset.iterrows():
+                            conciliado.append({
+                                "Número NF": nf["Número NF"],
+                                "CNPJ": nf["CNPJ"],
+                                "Razão Social": nf["Razão Social"],
+                                "Valor NF": nf["Valor"],
+                                "Data Vencimento": nf["Data de Vencimento"].date(),
+                                "Valor Crédito": valor_lanc,
+                                "Data Crédito": data_lanc.date(),
+                                "Descrição Crédito": lanc["Descrição"],
+                                "Status": "Conciliado",
+                                "Critério": "Razão Social semelhante"
+                            })
+                        nao_conciliados_parciais.drop(index=subset.index, inplace=True)
+                        match = True
+                        break
+                if match: break
+
+        # Final: restante sem correspondência
+        df_pendentes = nao_conciliados_parciais.copy()
         for _, nf in df_pendentes.iterrows():
             conciliado.append({
                 "Número NF": nf["Número NF"],
