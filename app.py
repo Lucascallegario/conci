@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 
 app = Flask(__name__)
+os.makedirs(HISTORICO_DIR, exist_ok=True)
 app.static_folder = 'static'
 HISTORICO_DIR = "historico"
 
