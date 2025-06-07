@@ -2,6 +2,7 @@
 from flask import Flask, request, render_template_string, send_file
 import pandas as pd
 import os
+import unicodedata
 from io import BytesIO
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
