@@ -5,6 +5,7 @@ import os
 from io import BytesIO
 from datetime import timedelta
 from difflib import SequenceMatcher
+from openai_conciliador import gerar_prompt_ia, consultar_ia
 
 app = Flask(__name__)
 
@@ -24,7 +25,6 @@ def upload_files():
         df_notas = pd.read_excel(notas)
         df_extrato = pd.read_excel(extrato)
 
-        # Tratamento básico
         df_notas["CNPJ"] = df_notas["CNPJ"].astype(str).str.replace(r'\D', '', regex=True)
         df_notas["Razão Social"] = df_notas["Razão Social"].astype(str).str.strip().str.upper()
         df_notas["Data de Vencimento"] = pd.to_datetime(df_notas["Data de Vencimento"])
@@ -35,25 +35,24 @@ def upload_files():
         df_extrato["Descrição"] = df_extrato["Descrição"].astype(str).str.strip().str.upper()
 
         conciliado = []
+        df_pendentes = df_notas.copy()
 
-        # Para cada lançamento no extrato
         for _, lanc in df_extrato.iterrows():
             data_lanc = lanc["Data do Crédito"]
             valor_lanc = lanc["Valor"]
             descricao = lanc["Descrição"]
 
-            # Filtrar notas com data próxima e mesmo cliente
-            candidatas = df_notas.copy()
-            candidatas = candidatas[
-                (abs(candidatas["Data de Vencimento"] - data_lanc) <= timedelta(days=5)) &
+            candidatas = df_pendentes[
+                (abs(df_pendentes["Data de Vencimento"] - data_lanc) <= timedelta(days=5)) &
                 (
-                    (candidatas["CNPJ"].str[:8].isin([descricao.replace('.', '').replace('/', '').replace('-', '')[:8]])) |
-                    (candidatas["Razão Social"].apply(lambda nome: nomes_semelhantes(nome, descricao)))
+                    (df_pendentes["CNPJ"].str[:8].isin([descricao.replace('.', '').replace('/', '').replace('-', '')[:8]])) |
+                    (df_pendentes["Razão Social"].apply(lambda nome: nomes_semelhantes(nome, descricao)))
                 )
             ]
 
-            # Tentar encontrar combinações cujo somatório ≈ valor_lanc (tolerância até 10 reais)
             from itertools import combinations
+            match_encontrado = False
+
             for i in range(1, len(candidatas) + 1):
                 for combo in combinations(candidatas.index, i):
                     subset = candidatas.loc[list(combo)]
@@ -70,35 +69,71 @@ def upload_files():
                                 "Data Crédito": data_lanc.date(),
                                 "Descrição Crédito": descricao,
                                 "Status": "Conciliado",
-                                "Critério": "Match por CNPJ/Razão + Data + Soma ≈ Valor"
+                                "Critério": "Match Regras Fixas"
                             })
-                        df_notas.drop(index=subset.index, inplace=True)
+                        df_pendentes.drop(index=subset.index, inplace=True)
+                        match_encontrado = True
                         break
-                else:
-                    continue
-                break
+                if match_encontrado:
+                    break
 
-        # Adicionar NFs não conciliadas
-        for _, nf in df_notas.iterrows():
-            conciliado.append({
-                "Número NF": nf["Número NF"],
-                "CNPJ": nf["CNPJ"],
-                "Razão Social": nf["Razão Social"],
-                "Valor NF": nf["Valor"],
-                "Data Vencimento": nf["Data de Vencimento"].date(),
-                "Valor Crédito": "",
-                "Data Crédito": "",
-                "Descrição Crédito": "",
-                "Status": "Não conciliado",
-                "Critério": "Sem correspondência"
-            })
+            if not match_encontrado and len(df_pendentes) > 0:
+                candidatas_ia = df_pendentes.head(5)
+                notas = []
+                for _, row in candidatas_ia.iterrows():
+                    notas.append({
+                        "Numero": row["Número NF"],
+                        "Razao": row["Razão Social"],
+                        "Valor": row["Valor"],
+                        "Vencimento": row["Data de Vencimento"]
+                    })
+
+                prompt = gerar_prompt_ia(descricao, valor_lanc, data_lanc, notas)
+                resposta = consultar_ia(prompt)
+
+                sugestao = []
+                for nota in notas:
+                    if str(nota["Numero"]) in resposta:
+                        sugestao.append(nota["Numero"])
+
+                for _, nf in candidatas_ia.iterrows():
+                    status = "Conciliado por IA" if nf["Número NF"] in sugestao else "Não conciliado"
+                    conciliado.append({
+                        "Número NF": nf["Número NF"],
+                        "CNPJ": nf["CNPJ"],
+                        "Razão Social": nf["Razão Social"],
+                        "Valor NF": nf["Valor"],
+                        "Data Vencimento": nf["Data de Vencimento"].date(),
+                        "Valor Crédito": valor_lanc if status == "Conciliado por IA" else "",
+                        "Data Crédito": data_lanc.date() if status == "Conciliado por IA" else "",
+                        "Descrição Crédito": descricao if status == "Conciliado por IA" else "",
+                        "Status": status,
+                        "Critério": "IA – agrupamento sem match fixo" if status == "Conciliado por IA" else "Sem correspondência"
+                    })
+                    if status == "Conciliado por IA":
+                        df_pendentes.drop(index=nf.name, inplace=True)
 
         df_saida = pd.DataFrame(conciliado)
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_saida.to_excel(writer, index=False, sheet_name="Conciliação")
-        output.seek(0)
 
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            df_saida.to_excel(writer, index=False, sheet_name="Conciliação")
+            workbook = writer.book
+            worksheet = writer.sheets["Conciliação"]
+
+            # Formatação de colunas
+            format_nf = workbook.add_format({'bg_color': '#F2F2F2'})
+            format_banco = workbook.add_format({'bg_color': '#DAE8FC'})
+            format_status = workbook.add_format({'bg_color': '#D9EAD3'})
+
+            worksheet.set_column("A:E", 18, format_nf)
+            worksheet.set_column("F:H", 18, format_banco)
+            worksheet.set_column("I:J", 25, format_status)
+
+            # Adicionar autofiltro
+            worksheet.autofilter(0, 0, len(df_saida), len(df_saida.columns) - 1)
+
+        output.seek(0)
         return send_file(output, download_name="relatorio_conciliacao.xlsx", as_attachment=True)
 
     except Exception as e:
