@@ -90,7 +90,6 @@ def upload_files():
 
                 prompt = gerar_prompt_ia(descricao, valor_lanc, data_lanc, notas)
                 resposta = consultar_ia(prompt)
-
                 sugestao = []
                 for nota in notas:
                     if str(nota["Numero"]) in resposta:
