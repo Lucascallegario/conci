@@ -1,4 +1,3 @@
-
 import os
 import unicodedata
 import pandas as pd
@@ -159,7 +158,7 @@ def upload_files():
             ws2.autofilter(0, 0, len(extrato_nao_conciliado), len(extrato_nao_conciliado.columns) - 1)
             ws2.freeze_panes(1, 0)
 
-            # Aba 3: Resumo Executivo
+            # Aba 3: Resumo
             total_nfs = len(df_saida)
             n_conciliadas = sum(df_saida["Status"] == "Conciliado")
             n_nao = total_nfs - n_conciliadas
@@ -176,8 +175,8 @@ def upload_files():
                     total_nfs, n_conciliadas, n_nao, f"{perc}%", valor_conc, valor_nao
                 ]
             })
-            df_resumo.to_excel(writer, index=False, sheet_name="Resumo Executivo")
-            ws3 = writer.sheets["Resumo Executivo"]
+            df_resumo.to_excel(writer, index=False, sheet_name="Resumo")
+            ws3 = writer.sheets["Resumo"]
             ws3.set_column("A:B", 25)
 
         return send_file(filepath, download_name=filename, as_attachment=True)
