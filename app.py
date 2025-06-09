@@ -53,7 +53,6 @@ def upload_files():
         conciliado = []
         df_pendentes = df_notas.copy()
 
-        # CAMADA 1: Agrupamento por raiz e data ±5 dias
         for _, lanc in df_extrato.iterrows():
             data_lanc = lanc["Data do Crédito"]
             valor_lanc = lanc["Valor"]
@@ -88,7 +87,6 @@ def upload_files():
                         break
                 if match: break
 
-        # CAMADA 2: Regras probabilísticas para os ainda pendentes
         for _, lanc in df_extrato.iterrows():
             if df_pendentes.empty:
                 break
@@ -104,10 +102,8 @@ def upload_files():
                 jaro_sim = jellyfish.jaro_winkler_similarity(str(nf["Razão Social"]), str(lanc["Descrição"]))
                 if jaro_sim >= 0.90:
                     score += 2
-
                 if score >= 10:
                     matches.append((score, nf))
-
             if matches:
                 best_match = sorted(matches, key=lambda x: -x[0])[0][1]
                 conciliado.append({
@@ -124,7 +120,6 @@ def upload_files():
                 })
                 df_pendentes.drop(index=best_match.name, inplace=True)
 
-        # CAMADA FINAL: restante sem correspondência
         for _, nf in df_pendentes.iterrows():
             conciliado.append({
                 "Número NF": nf["Número NF"],
@@ -140,14 +135,50 @@ def upload_files():
             })
 
         df_saida = pd.DataFrame(conciliado)
+        conciliados_data_credito = set((c["Data Crédito"], c["Valor Crédito"]) for c in conciliado if c["Status"] == "Conciliado")
+        extrato_nao_conciliado = df_extrato[~df_extrato.apply(lambda row: (row["Data do Crédito"].date(), row["Valor"]) in conciliados_data_credito, axis=1)].copy()
+
         filename = f"conciliacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         filepath = os.path.join(HISTORICO_DIR, filename)
 
         with pd.ExcelWriter(filepath, engine='xlsxwriter') as writer:
+            # Aba 1: Conciliação
             df_saida.to_excel(writer, index=False, sheet_name="Conciliação")
             ws = writer.sheets["Conciliação"]
             ws.autofilter(0, 0, len(df_saida), len(df_saida.columns) - 1)
-            ws.set_column("A:J", 18)
+            ws.freeze_panes(1, 0)
+
+            status_col = df_saida.columns.get_loc("Status")
+            for i, status in enumerate(df_saida["Status"], start=1):
+                color = "#D9EAD3" if status == "Conciliado" else "#F4CCCC"
+                ws.set_row(i, None, writer.book.add_format({"bg_color": color}))
+
+            # Aba 2: Extrato não conciliado
+            extrato_nao_conciliado.to_excel(writer, index=False, sheet_name="Extrato não conciliado")
+            ws2 = writer.sheets["Extrato não conciliado"]
+            ws2.autofilter(0, 0, len(extrato_nao_conciliado), len(extrato_nao_conciliado.columns) - 1)
+            ws2.freeze_panes(1, 0)
+
+            # Aba 3: Resumo Executivo
+            total_nfs = len(df_saida)
+            n_conciliadas = sum(df_saida["Status"] == "Conciliado")
+            n_nao = total_nfs - n_conciliadas
+            perc = round(n_conciliadas / total_nfs * 100, 2) if total_nfs else 0
+            valor_conc = df_saida[df_saida["Status"] == "Conciliado"]["Valor Crédito"].sum()
+            valor_nao = df_saida[df_saida["Status"] != "Conciliado"]["Valor NF"].sum()
+
+            df_resumo = pd.DataFrame({
+                "Métrica": [
+                    "Total de NFs", "Conciliadas", "Não conciliadas",
+                    "% Conciliação", "Valor conciliado", "Valor não conciliado"
+                ],
+                "Valor": [
+                    total_nfs, n_conciliadas, n_nao, f"{perc}%", valor_conc, valor_nao
+                ]
+            })
+            df_resumo.to_excel(writer, index=False, sheet_name="Resumo Executivo")
+            ws3 = writer.sheets["Resumo Executivo"]
+            ws3.set_column("A:B", 25)
 
         return send_file(filepath, download_name=filename, as_attachment=True)
     except Exception as e:
