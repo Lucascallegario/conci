@@ -1,10 +1,9 @@
 
-import unicodedata
-
-from flask import Flask, request, render_template_string, send_file
-import pandas as pd
 import os
-from io import BytesIO
+import unicodedata
+import pandas as pd
+import jellyfish
+from flask import Flask, request, render_template_string, send_file
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from itertools import combinations
@@ -13,9 +12,6 @@ app = Flask(__name__)
 app.static_folder = 'static'
 HISTORICO_DIR = "historico"
 os.makedirs(HISTORICO_DIR, exist_ok=True)
-
-def nomes_semelhantes(nome1, nome2):
-    return SequenceMatcher(None, nome1.upper(), nome2.upper()).ratio() > 0.8
 
 def nomes_parecidos(a, b, threshold=0.8):
     return SequenceMatcher(None, a.upper(), b.upper()).ratio() >= threshold
@@ -92,83 +88,43 @@ def upload_files():
                         break
                 if match: break
 
-        # CAMADA 2: Raiz + Data ±10 dias
-        nao_conciliados_parciais = df_pendentes.copy()
-
+        # CAMADA 2: Regras probabilísticas para os ainda pendentes
         for _, lanc in df_extrato.iterrows():
-            if nao_conciliados_parciais.empty:
+            if df_pendentes.empty:
                 break
-            data_lanc = lanc["Data do Crédito"]
-            valor_lanc = lanc["Valor"]
-            raiz_lanc = lanc["Raiz"]
+            matches = []
+            for _, nf in df_pendentes.iterrows():
+                score = 0
+                if nf["Raiz"] == lanc["Raiz"]:
+                    score += 5
+                if abs(nf["Valor"] - lanc["Valor"]) <= 10:
+                    score += 4
+                if abs((nf["Data de Vencimento"] - lanc["Data do Crédito"]).days) <= 5:
+                    score += 3
+                jaro_sim = jellyfish.jaro_winkler_similarity(str(nf["Razão Social"]), str(lanc["Descrição"]))
+                if jaro_sim >= 0.90:
+                    score += 2
 
-            candidatas = nao_conciliados_parciais[
-                (abs(nao_conciliados_parciais["Data de Vencimento"] - data_lanc) <= timedelta(days=10)) &
-                (nao_conciliados_parciais["Raiz"] == raiz_lanc)
-            ]
+                if score >= 10:
+                    matches.append((score, nf))
 
-            match = False
-            for i in range(1, len(candidatas)+1):
-                for combo in combinations(candidatas.index, i):
-                    subset = candidatas.loc[list(combo)]
-                    soma = subset["Valor"].sum()
-                    if abs(soma - valor_lanc) <= 10:
-                        for _, nf in subset.iterrows():
-                            conciliado.append({
-                                "Número NF": nf["Número NF"],
-                                "CNPJ": nf["CNPJ"],
-                                "Razão Social": nf["Razão Social"],
-                                "Valor NF": nf["Valor"],
-                                "Data Vencimento": nf["Data de Vencimento"].date(),
-                                "Valor Crédito": valor_lanc,
-                                "Data Crédito": data_lanc.date(),
-                                "Descrição Crédito": lanc["Descrição"],
-                                "Status": "Conciliado",
-                                "Critério": "Raiz + Data ±10 dias"
-                            })
-                        nao_conciliados_parciais.drop(index=subset.index, inplace=True)
-                        match = True
-                        break
-                if match: break
+            if matches:
+                best_match = sorted(matches, key=lambda x: -x[0])[0][1]
+                conciliado.append({
+                    "Número NF": best_match["Número NF"],
+                    "CNPJ": best_match["CNPJ"],
+                    "Razão Social": best_match["Razão Social"],
+                    "Valor NF": best_match["Valor"],
+                    "Data Vencimento": best_match["Data de Vencimento"].date(),
+                    "Valor Crédito": lanc["Valor"],
+                    "Data Crédito": lanc["Data do Crédito"].date(),
+                    "Descrição Crédito": lanc["Descrição"],
+                    "Status": "Conciliado",
+                    "Critério": "Pontuação Probabilística"
+                })
+                df_pendentes.drop(index=best_match.name, inplace=True)
 
-        # CAMADA 3: Razão Social semelhante (fuzzy match)
-        for _, lanc in df_extrato.iterrows():
-            if nao_conciliados_parciais.empty:
-                break
-            data_lanc = lanc["Data do Crédito"]
-            valor_lanc = lanc["Valor"]
-            desc_lanc = lanc["Descrição"]
-
-            candidatas = nao_conciliados_parciais[
-                nao_conciliados_parciais["Razão Social"].apply(lambda x: nomes_parecidos(x, desc_lanc))
-            ]
-
-            match = False
-            for i in range(1, len(candidatas)+1):
-                for combo in combinations(candidatas.index, i):
-                    subset = candidatas.loc[list(combo)]
-                    soma = subset["Valor"].sum()
-                    if abs(soma - valor_lanc) <= 10:
-                        for _, nf in subset.iterrows():
-                            conciliado.append({
-                                "Número NF": nf["Número NF"],
-                                "CNPJ": nf["CNPJ"],
-                                "Razão Social": nf["Razão Social"],
-                                "Valor NF": nf["Valor"],
-                                "Data Vencimento": nf["Data de Vencimento"].date(),
-                                "Valor Crédito": valor_lanc,
-                                "Data Crédito": data_lanc.date(),
-                                "Descrição Crédito": lanc["Descrição"],
-                                "Status": "Conciliado",
-                                "Critério": "Razão Social semelhante"
-                            })
-                        nao_conciliados_parciais.drop(index=subset.index, inplace=True)
-                        match = True
-                        break
-                if match: break
-
-        # Final: restante sem correspondência
-        df_pendentes = nao_conciliados_parciais.copy()
+        # CAMADA FINAL: restante sem correspondência
         for _, nf in df_pendentes.iterrows():
             conciliado.append({
                 "Número NF": nf["Número NF"],
@@ -187,25 +143,15 @@ def upload_files():
         filename = f"conciliacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         filepath = os.path.join(HISTORICO_DIR, filename)
 
-        try:
-            with pd.ExcelWriter(filepath, engine='xlsxwriter') as writer:
-                format_nf = writer.book.add_format({'bg_color': '#F2F2F2'})
-                format_banco = writer.book.add_format({'bg_color': '#DAE8FC'})
-                format_status = writer.book.add_format({'bg_color': '#D9EAD3'})
+        with pd.ExcelWriter(filepath, engine='xlsxwriter') as writer:
+            df_saida.to_excel(writer, index=False, sheet_name="Conciliação")
+            ws = writer.sheets["Conciliação"]
+            ws.autofilter(0, 0, len(df_saida), len(df_saida.columns) - 1)
+            ws.set_column("A:J", 18)
 
-                df_saida.to_excel(writer, index=False, sheet_name="Conciliação")
-                ws = writer.sheets["Conciliação"]
-                ws.autofilter(0, 0, len(df_saida), len(df_saida.columns) - 1)
-                ws.set_column("A:E", 18, format_nf)
-                ws.set_column("F:H", 18, format_banco)
-                ws.set_column("I:J", 25, format_status)
-
-            return send_file(filepath, download_name=filename, as_attachment=True)
-        except Exception as e:
-            return f"Erro ao gerar Excel: {e}"
-
+        return send_file(filepath, download_name=filename, as_attachment=True)
     except Exception as e:
-        return f"Erro ao processar os arquivos: {e}"
+        return f"Erro ao processar: {e}"
 
 @app.route("/historico/<nome>")
 def baixar_arquivo(nome):
