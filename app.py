@@ -1,85 +1,80 @@
-import os
-import itertools
+from flask import Flask, render_template, request, send_file
 import pandas as pd
-from flask import Flask, request, render_template, send_file
-from werkzeug.utils import secure_filename
+from itertools import combinations
+import io
+import re
 
 app = Flask(__name__)
-UPLOAD_FOLDER = 'uploads'
-RESULT_FOLDER = 'resultados'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(RESULT_FOLDER, exist_ok=True)
 
-def normalizar_razao(razao):
-    if not isinstance(razao, str):
-        return ""
-    return ' '.join([palavra for palavra in razao.upper().split() if not palavra.isnumeric()])
+def normalize_razao_social(razao):
+    razao = str(razao)
+    razao = re.sub(r'[^A-Z0-9 ]+', '', razao.upper())
+    razao = re.sub(r'^\d+\s*', '', razao)
+    return razao.strip()
 
-def buscar_combinacoes(possibilidades, valor_alvo, tolerancia=3):
-    for r in range(1, len(possibilidades) + 1):
-        for combo in itertools.combinations(possibilidades, r):
-            soma = sum(combo)
+def encontrar_combinacoes(notas, valor_alvo, tolerancia=3.0):
+    resultados = []
+    for r in range(1, len(notas) + 1):
+        for combo in combinations(notas, r):
+            soma = sum(n['Valor NF'] for n in combo)
             if abs(soma - valor_alvo) <= tolerancia:
-                return combo
-    return None
+                resultados.append(combo)
+    return resultados
 
 @app.route('/')
 def index():
-    arquivos = os.listdir(RESULT_FOLDER)
-    return render_template('index.html', arquivos=arquivos)
+    return render_template('index.html')
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    file_notas = request.files['notas']
-    file_extrato = request.files['extrato']
-    notas_path = os.path.join(UPLOAD_FOLDER, secure_filename(file_notas.filename))
-    extrato_path = os.path.join(UPLOAD_FOLDER, secure_filename(file_extrato.filename))
-    file_notas.save(notas_path)
-    file_extrato.save(extrato_path)
+    notas_file = request.files['notas']
+    extrato_file = request.files['extrato']
 
-    df_notas = pd.read_excel(notas_path)
-    df_extrato = pd.read_excel(extrato_path)
+    df_notas = pd.read_excel(notas_file)
+    df_extrato = pd.read_excel(extrato_file)
 
-    df_notas['Razao Normalizada'] = df_notas['Razão Social'].apply(normalizar_razao)
-    df_extrato['Razao Normalizada'] = df_extrato['Razão Social'].apply(normalizar_razao)
+    df_notas['Razao Normalizada'] = df_notas['Razão Social'].apply(normalize_razao_social)
+    df_extrato['Razao Normalizada'] = df_extrato['Razão Social'].apply(normalize_razao_social)
 
-    df_notas['Conciliado'] = False
-    df_notas['Grupo'] = None
+    conciliados = []
+    nao_conciliados = []
 
-    resultados = []
-    for cliente in df_extrato['Razao Normalizada'].unique():
-        recebimentos_cliente = df_extrato[df_extrato['Razao Normalizada'] == cliente]
-        notas_cliente = df_notas[(df_notas['Razao Normalizada'] == cliente) & (~df_notas['Conciliado'])]
+    for idx, pagamento in df_extrato.iterrows():
+        valor_pago = pagamento['Valor']
+        razao_pagador = pagamento['Razao Normalizada']
 
-        valores_nf = list(notas_cliente['Valor NF'])
-        indices_nf = list(notas_cliente.index)
+        possiveis_nfs = df_notas[df_notas['Razao Normalizada'] == razao_pagador]
+        lista_nfs = possiveis_nfs.to_dict('records')
 
-        for _, linha in recebimentos_cliente.iterrows():
-            valor_pago = linha['Valor Crédito']
-            combinacao = buscar_combinacoes(valores_nf, valor_pago)
-            if combinacao:
-                usados = 0
-                for val in combinacao:
-                    for idx in indices_nf:
-                        if not df_notas.at[idx, 'Conciliado'] and abs(df_notas.at[idx, 'Valor NF'] - val) < 0.01:
-                            df_notas.at[idx, 'Conciliado'] = True
-                            df_notas.at[idx, 'Grupo'] = f"{cliente} | {valor_pago:.2f} em {linha['Data Crédito'].date()}"
-                            usados += 1
-                            break
-                if usados != len(combinacao):
-                    continue
+        combinacoes = encontrar_combinacoes(lista_nfs, valor_pago)
 
-    df_notas['Status'] = df_notas['Conciliado'].apply(lambda x: 'Conciliado' if x else 'Não conciliado')
-    nome_saida = f"resultado_conciliacao_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    caminho_saida = os.path.join(RESULT_FOLDER, nome_saida)
-    df_notas.to_excel(caminho_saida, index=False)
+        if combinacoes:
+            melhor_combinacao = min(combinacoes, key=lambda c: abs(sum(n['Valor NF'] for n in c) - valor_pago))
+            for nota in melhor_combinacao:
+                conciliados.append({
+                    **nota,
+                    'Valor Pago': valor_pago,
+                    'Data Pagamento': pagamento['Data'],
+                    'Critério': 'Valor aproximado encontrado por combinação'
+                })
+        else:
+            nao_conciliados.append({
+                'Razão Social': pagamento['Razão Social'],
+                'Valor Pago': valor_pago,
+                'Data Pagamento': pagamento['Data'],
+                'Status': 'Não conciliado'
+            })
 
-    return send_file(caminho_saida, as_attachment=True)
+    df_conciliados = pd.DataFrame(conciliados)
+    df_nao_conciliados = pd.DataFrame(nao_conciliados)
 
-@app.route('/historico/<arquivo>')
-def historico(arquivo):
-    caminho = os.path.join(RESULT_FOLDER, arquivo)
-    return send_file(caminho, as_attachment=True)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df_conciliados.to_excel(writer, index=False, sheet_name='Conciliados')
+        df_nao_conciliados.to_excel(writer, index=False, sheet_name='Nao Conciliados')
+    output.seek(0)
+
+    return send_file(output, as_attachment=True, download_name="resultado_conciliacao.xlsx", mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 if __name__ == '__main__':
     app.run(debug=True)
