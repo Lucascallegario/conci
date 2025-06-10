@@ -3,6 +3,7 @@ import pandas as pd
 from itertools import combinations
 import io
 import re
+import os
 
 app = Flask(__name__)
 
@@ -43,7 +44,7 @@ def upload():
         valor_pago = pagamento['Valor']
         razao_pagador = pagamento['Razao Normalizada']
 
-        possiveis_nfs = df_notas[df_notas['Razao Normalizada'] == razao_pagador]
+        possiveis_nfs = df_notas[df_notas['Razao Normalizada'].str.contains(razao_pagador, na=False)]
         lista_nfs = possiveis_nfs.to_dict('records')
 
         combinacoes = encontrar_combinacoes(lista_nfs, valor_pago)
@@ -77,4 +78,5 @@ def upload():
     return send_file(output, as_attachment=True, download_name="resultado_conciliacao.xlsx", mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
